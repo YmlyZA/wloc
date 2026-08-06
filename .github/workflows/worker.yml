@@ -77,18 +77,33 @@ jobs:
     environment:
       name: production
       url: https://wloc-spoofer.onebird.workers.dev
+    # secrets 上下文在 job/step 的 if 里取不到, 但在 job 级 env 里可以。先落成
+    # 布尔字符串, 后面的步骤再按 env 判断 —— 这样没配凭据时是"跳过并提示",
+    # 而不是跑到 wrangler 那里报一个语焉不详的认证失败。
+    env:
+      HAS_CREDENTIALS: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
     steps:
+      - name: 检查是否已配置 Cloudflare 凭据
+        if: env.HAS_CREDENTIALS != 'true'
+        run: |
+          echo "::warning::未配置 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID, 跳过部署。"
+          echo "配置方法: gh secret set CLOUDFLARE_API_TOKEN --repo YmlyZA/wloc"
+
       - uses: actions/checkout@v4
+        if: env.HAS_CREDENTIALS == 'true'
 
       - uses: actions/setup-node@v4
+        if: env.HAS_CREDENTIALS == 'true'
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: worker/package-lock.json
 
       - run: npm ci
+        if: env.HAS_CREDENTIALS == 'true'
 
       - name: wrangler deploy
+        if: env.HAS_CREDENTIALS == 'true'
         run: npm run deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -97,6 +112,7 @@ jobs:
       # 新版本在各 POP 上生效有滞后, 部署刚返回就测有可能打到旧版本。这里轮询到
       # 一个新旧行为不同的探针为止, 而不是 sleep 一个拍脑袋的秒数。
       - name: 冒烟测试（等待 rollout）
+        if: env.HAS_CREDENTIALS == 'true'
         run: |
           BASE=https://wloc-spoofer.onebird.workers.dev
           for i in $(seq 1 20); do
