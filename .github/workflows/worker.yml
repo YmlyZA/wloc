@@ -85,6 +85,9 @@ jobs:
     steps:
       - name: 检查是否已配置 Cloudflare 凭据
         if: env.HAS_CREDENTIALS != 'true'
+        # 必须覆盖掉顶部 defaults 里的 working-directory: worker —— 这一步跑在
+        # checkout 之前(且 checkout 会被跳过), 那个目录还不存在, bash 起不来。
+        working-directory: .
         run: |
           echo "::warning::未配置 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID, 跳过部署。"
           echo "配置方法: gh secret set CLOUDFLARE_API_TOKEN --repo YmlyZA/wloc"
