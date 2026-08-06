@@ -1,0 +1,121 @@
+name: Worker CI
+
+# 测试对所有分支和 PR 都跑; 部署只在 main 上、且只在测试全绿之后。
+# 用同一个 workflow 里的 needs 来卡顺序, 而不是跨 workflow 的 workflow_run ——
+# 后者拿到的是"某次 CI 结束了", 与"这次 push 的代码测过了"并不等价。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: # 允许手动触发一次部署(比如改了 Cloudflare 侧配置想重推)
+
+defaults:
+  run:
+    working-directory: worker
+
+jobs:
+  test:
+    name: 测试与构建
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 是当前 LTS, 24 贴近 workers 运行时。解析逻辑是纯 JS, 两个版本都该过。
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - run: npm ci
+
+      # 15 条纯函数用例, 不联网。覆盖各家地图的链接解析、坐标系换算、值域校验,
+      # 以及 gcj-browser.js 与 parse.js 两份 GCJ 实现的一致性对拍。
+      - name: 单元测试
+        run: npm test
+
+      # dry-run 会真正跑一遍 esbuild 打包: 语法错误、import 写错、体积超限都能在
+      # 这里暴露, 不需要 Cloudflare 凭据。
+      - name: 构建检查
+        run: npm run build
+
+      # page.js 整体是一个模板串, 里面的 JS 不经过任何构建期检查 —— 少一个引号
+      # 也能打包成功, 直到浏览器打开才报错。这里把渲染结果单独解析一次。
+      - name: 校验页面内联 JS 可解析
+        run: |
+          node --input-type=module -e '
+            import { getPageHtml } from "./src/page.js";
+            import vm from "node:vm";
+            const html = getPageHtml();
+            const open = html.indexOf("<script>\n");
+            const js = html.slice(open + 9, html.indexOf("</" + "script>", open));
+            new vm.Script(js, { filename: "page-inline.js" });
+            for (const fn of ["toDisplay", "fromDisplay", "setPosFromDisplay", "gcj02ToWgs84"]) {
+              if (!js.includes("function " + fn)) throw new Error("页面缺少 " + fn);
+            }
+            console.log("页面内联 JS 合法, " + js.length + " 字节");
+          '
+
+  deploy:
+    name: 部署到 Cloudflare
+    needs: test
+    # 只在本 fork 的 main 上部署。这个 workflow 若随 PR 进了上游仓库, 这一条会让
+    # deploy job 直接跳过, 不会拿上游的凭据(或没有凭据)去跑部署。
+    if: >-
+      github.repository_owner == 'YmlyZA'
+      && github.ref == 'refs/heads/main'
+      && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      # 连续推送时只保留最后一次部署, 避免两个 deploy 互相覆盖。
+      group: deploy-worker
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: https://wloc-spoofer.onebird.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - run: npm ci
+
+      - name: wrangler deploy
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # 新版本在各 POP 上生效有滞后, 部署刚返回就测有可能打到旧版本。这里轮询到
+      # 一个新旧行为不同的探针为止, 而不是 sleep 一个拍脑袋的秒数。
+      - name: 冒烟测试（等待 rollout）
+        run: |
+          BASE=https://wloc-spoofer.onebird.workers.dev
+          for i in $(seq 1 20); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+              "$BASE/api/parse?format=json&u=%3Fq%3D999.1234%2C888.5678" || echo 000)
+            echo "第 $i 次: 越界输入返回 $code (期望 422)"
+            [ "$code" = "422" ] && break
+            [ "$i" = "20" ] && { echo "::error::rollout 超时, 越界校验始终未生效"; exit 1; }
+            sleep 6
+          done
+          echo "--- 解析冒烟 ---"
+          for u in \
+            "https%3A%2F%2Fsurl.amap.com%2Fj7NpZxc13AP" \
+            "https%3A%2F%2Fmaps.apple%2Fp%2F0mZU6qFyXAEYRe" ; do
+            body=$(curl -sS --max-time 25 "$BASE/api/parse?format=json&u=$u")
+            echo "  $body"
+            echo "$body" | grep -q '"lat":' || { echo "::error::解析未返回坐标"; exit 1; }
+          done
+          echo "--- 页面 ---"
+          curl -sS --max-time 20 "$BASE/" | grep -q 'fromDisplay' \
+            || { echo "::error::页面缺少坐标系补偿逻辑"; exit 1; }
+          echo "OK"
