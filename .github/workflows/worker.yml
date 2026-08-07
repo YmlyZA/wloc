@@ -105,25 +105,33 @@ jobs:
       - run: npm ci
         if: env.HAS_CREDENTIALS == 'true'
 
+      # GIT_SHA 注入进 Worker, 供 /api/version 回报。下一步的冒烟测试靠它判断
+      # 各 POP 是否已经在跑这次的代码。
       - name: wrangler deploy
         if: env.HAS_CREDENTIALS == 'true'
-        run: npm run deploy
+        run: npm run deploy -- --var GIT_SHA:${{ github.sha }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # 新版本在各 POP 上生效有滞后, 部署刚返回就测有可能打到旧版本。这里轮询到
-      # 一个新旧行为不同的探针为止, 而不是 sleep 一个拍脑袋的秒数。
+      # 新版本在各 POP 上生效有滞后, 部署刚返回就测有可能打到旧版本。
+      #
+      # 探针必须随提交变化。之前用的是"越界输入返回 422"这类功能行为, 问题在于它
+      # 只对引入该行为的那一次部署有区分性: 下一次改的是别的东西, 旧版本同样返回
+      # 422, 于是 CI 报绿而实测仍是旧代码 —— 这个坑已经踩过一次。
+      # 现在比对 /api/version 里的 GIT_SHA, 它天然每次提交都不同。
       - name: 冒烟测试（等待 rollout）
         if: env.HAS_CREDENTIALS == 'true'
         run: |
           BASE=https://wloc-spoofer.onebird.workers.dev
-          for i in $(seq 1 20); do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-              "$BASE/api/parse?format=json&u=%3Fq%3D999.1234%2C888.5678" || echo 000)
-            echo "第 $i 次: 越界输入返回 $code (期望 422)"
-            [ "$code" = "422" ] && break
-            [ "$i" = "20" ] && { echo "::error::rollout 超时, 越界校验始终未生效"; exit 1; }
+          WANT=${{ github.sha }}
+          echo "期望版本: $WANT"
+          for i in $(seq 1 30); do
+            got=$(curl -sS --max-time 15 "$BASE/api/version" \
+                  | sed -n 's/.*"sha":"\([^"]*\)".*/\1/p')
+            echo "第 $i 次: 线上版本 ${got:-<无响应>}"
+            [ "$got" = "$WANT" ] && { echo "rollout 完成"; break; }
+            [ "$i" = "30" ] && { echo "::error::rollout 超时, 线上仍是 ${got:-未知} 而非 $WANT"; exit 1; }
             sleep 6
           done
           echo "--- 解析冒烟 ---"

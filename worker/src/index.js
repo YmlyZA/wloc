@@ -37,6 +37,17 @@ app.get("/api/parse", async (c) => {
   }
 });
 
+// 报出当前实例跑的是哪个提交。存在的理由是 Cloudflare 的新版本在各 POP 上生效
+// 有滞后: 部署返回成功之后, 一段时间内不同地区仍可能拿到旧代码。没有这个端点就
+// 只能拿某个功能行为当探针, 而"这次改动改变了什么行为"每次都不一样, 上一次的探针
+// 对下一次的改动往往不具区分性 —— 于是 CI 报绿, 实际测到的还是旧版本。
+// GIT_SHA 由部署时的 --var 注入, 本地开发时为 dev。
+app.get("/api/version", (c) => {
+  c.header("Access-Control-Allow-Origin", "*");
+  c.header("Cache-Control", "no-store");
+  return c.json({ sha: (c.env && c.env.GIT_SHA) || "dev" });
+});
+
 // 兜底 500 也要带 CORS —— 否则快捷指令那边看到的是跨域错误, 而不是真正的原因。
 app.onError((e, c) => {
   c.header("Access-Control-Allow-Origin", "*");

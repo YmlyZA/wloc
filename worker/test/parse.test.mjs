@@ -259,6 +259,19 @@ test("注入页面的 GCJ 实现与服务端逐点一致", () => {
   assert.deepEqual(sandbox.w(37.334859, -122.00904), wgs84ToGcj02(37.334859, -122.00904));
 });
 
+test("/api/version 回报部署时注入的 GIT_SHA", async () => {
+  // CI 靠这个端点判断各 POP 是否已经在跑本次提交的代码, 所以它不能悄悄坏掉 ——
+  // 一旦它恒返回 dev, rollout 轮询就会一直等到超时。
+  const { default: app } = await import("../src/index.js");
+  const r = await app.request("/api/version", {}, { GIT_SHA: "deadbeef" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { sha: "deadbeef" });
+  assert.equal(r.headers.get("cache-control"), "no-store");
+  // 没有注入时(本地开发)退回 dev, 而不是抛错
+  const dev = await (await app.request("/api/version")).json();
+  assert.equal(dev.sha, "dev");
+});
+
 test("round6 保留 6 位小数 (约 0.1 米)", () => {
   assert.equal(round6(22.5448651234), 22.544865);
   assert.equal(round6(-122.0090401), -122.00904);
