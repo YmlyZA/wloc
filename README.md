@@ -72,6 +72,16 @@ https://raw.githubusercontent.com/Yu9191/wloc/refs/heads/main/modules/wloc.modul
 cd worker && npm install && npm test
 ```
 
+另有一套联网的端到端冒烟测试，拿 14 条真实的地图分享链接（港澳台 / 大陆 / 境外，
+苹果 / Google / 高德 / 百度）去打一个**已部署**的 worker，校验解析出的坐标与锁定的
+基线相差不超过 10 米。它依赖第三方地图服务，会因外部变动而失败，所以不进 CI，
+部署后手动跑：
+
+```bash
+cd worker && npm run smoke                            # 打默认线上实例
+cd worker && npm run smoke -- http://127.0.0.1:8787   # 打本地 wrangler dev
+```
+
 **坐标系说明：** 页面内部一律以 WGS84 为准。底图切到「高德」时，瓦片画的是 GCJ-02
 地物，与 Leaflet 的 WGS84 像素映射差着一个偏移量（深圳一带约 600 米），页面会在
 选点/落点时自动双向换算，所以在任意底图上点选得到的都是同一个 WGS84 坐标。

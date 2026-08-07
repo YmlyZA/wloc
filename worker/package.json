@@ -2,6 +2,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs",
     "build": "wrangler deploy --dry-run --minify",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
